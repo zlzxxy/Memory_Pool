@@ -1,0 +1,35 @@
+# 编译产物
+*.o
+*.obj
+*.out
+*.exe
+*.so
+*.a
+
+# 可执行文件
+main
+server
+client
+
+# 构建目录
+build/
+bin/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# 编辑器
+.vscode/
+.idea/
+
+# 临时文件
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志
+*.log
