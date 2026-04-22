@@ -3,27 +3,62 @@
 #include <cstring>
 
 namespace memoryPool {
-//内存分配
+
+bool PageCache::removeFromFreeList(Span* span) {
+    auto it = freeSpans_.find(span->numPages);
+    if (it == freeSpans_.end()) {
+        return false;
+    }
+
+    Span* current = it->second;
+    Span* prev = nullptr;
+    while (current && current != span) {
+        prev = current;
+        current = current->next;
+    }
+
+    if (!current) {
+        return false;
+    }
+
+    if (prev) {
+        prev->next = current->next;
+    } else {
+        it->second = current->next;
+    }
+
+    if (it->second == nullptr) {
+        freeSpans_.erase(it);
+    }
+
+    current->next = nullptr;
+    current->isFree = false;
+    return true;
+}
+
 void* PageCache::allocateSpan(size_t numPages) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = freeSpans_.lower_bound(numPages);
     if (it != freeSpans_.end()) {
         Span* span = it->second;
-        
+
         if (span->next) {
-            freeSpans_[it->first] = span->next;
+            it->second = span->next;
         }
         else {
             freeSpans_.erase(it);
         }
 
-        //如果span大于需要的numPages则进行分割
+        span->next = nullptr;
+        span->isFree = false;
+
         if (span->numPages > numPages) {
             Span* newSpan = new Span;
             newSpan->pageAddr = static_cast<char*>(span->pageAddr) + numPages * PAGE_SIZE;
             newSpan->numPages = span->numPages - numPages;
             newSpan->next = nullptr;
+            newSpan->isFree = true;
 
             auto& list = freeSpans_[newSpan->numPages];
             newSpan->next = list;
@@ -44,40 +79,33 @@ void* PageCache::allocateSpan(size_t numPages) {
         span->pageAddr = memory;
         span->numPages = numPages;
         span->next = nullptr;
+        span->isFree = false;
 
         spanMap_[memory] = span;
         return memory;
     }
 }
 
-void PageCache::deallocateSpan(void* ptr, size_t numPages) {
+void PageCache::deallocateSpan(void* ptr, size_t /*numPages*/) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = spanMap_.find(ptr);
     if (it == spanMap_.end()) return;
 
     Span* span = it->second;
+    span->isFree = true;
 
-    void* nextAddr = static_cast<char*>(ptr) + numPages * PAGE_SIZE;
+    void* nextAddr = static_cast<char*>(span->pageAddr) + span->numPages * PAGE_SIZE;
     auto nextIt = spanMap_.find(nextAddr);
     if (nextIt != spanMap_.end()) {
         Span* nextSpan = nextIt->second;
-
-        auto& nextList = freeSpans_[nextSpan->numPages];
-        if (nextList == nextSpan) {
-            nextList = nextSpan->next;
+        if (nextSpan != span && nextSpan->isFree && removeFromFreeList(nextSpan)) {
+            span->numPages += nextSpan->numPages;
+            spanMap_.erase(nextAddr);
+            delete nextSpan;
         }
-        else {
-            Span* prev = nextList;
-            while (prev->next != nextSpan)
-                prev = prev->next;
-            prev->next = nextSpan->next;
-        }
-
-        span->numPages += nextSpan->numPages;
-        spanMap_.erase(nextAddr);
-        delete nextSpan;
     }
+
     auto& list = freeSpans_[span->numPages];
     span->next = list;
     list = span;
@@ -87,11 +115,9 @@ void* PageCache::systemAlloc(size_t numPages)
 {
     size_t size = numPages * PAGE_SIZE;
 
-    // 使用mmap分配内存
     void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) return nullptr;
 
-    // 清零内存
     memset(ptr, 0, size);
     return ptr;
 }

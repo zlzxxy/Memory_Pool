@@ -18,22 +18,21 @@ public:
     void deallocateSpan(void* ptr, size_t numPages);
 
 private:
-    PageCache() = default;
-
-    //向系统申请内存
-    void* systemAlloc(size_t numPages);
-
-private:
     struct Span {
-        void* pageAddr;    //页起始地址
-        size_t numPages;    //页数
-        Span* next;    //链表指针
+        void* pageAddr;
+        size_t numPages;
+        Span* next;
+        bool isFree;
     };
 
-    //按页数管理空闲span，不同页数对应不同Span链表
-    std::map<size_t, Span*> freeSpans_;
+    PageCache() = default;
 
-    //页号到span的映射，用于回收
+    void* systemAlloc(size_t numPages);
+
+    bool removeFromFreeList(Span* span);
+
+private:
+    std::map<size_t, Span*> freeSpans_;
     std::map<void*, Span*> spanMap_;
     std::mutex mutex_;
 };
