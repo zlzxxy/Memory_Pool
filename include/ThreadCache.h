@@ -1,3 +1,5 @@
+#pragma once
+#include "Common.h"
 namespace memorypool {
 class ThreadCache {
 public:
