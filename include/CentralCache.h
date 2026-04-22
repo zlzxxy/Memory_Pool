@@ -1,3 +1,11 @@
+#include <mutex>
+#include <unordered_map>
+#include <array>
+#include <atomic>
+#include <chrono>
+
+namespace memorypool {
+
 //定义从PageCache中拿来的大块span的结构体
 struct SpanTracker {
     std::atomic<void*> spanAddr{nullptr};   //span的起始地址
@@ -43,3 +51,4 @@ private:
     bool shouldPerformDelayedReturn(size_t index, size_t currentCount, std::chrono::steady_clock::time_point currentTime);
     void performDelayedReturn(size_t index);
 };
+}

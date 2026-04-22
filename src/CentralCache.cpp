@@ -1,3 +1,10 @@
+#include "../include/CentralCache.h"
+#include "../include/PageCache.h"
+#include <cassert>
+#include <thread>
+#include <chrono>
+
+namespace memorypool {
 //ThreadCache从CentralCache中取一块内存
 void* CentralCache::fetchRange(size_t index) {
     if (index >= FREE_LIST_SIZE) {
@@ -192,4 +199,5 @@ SpanTracker* CentralCache::getSpanTracker(void* blockAddr) {
         }
     }
     return nullptr;
+}
 }

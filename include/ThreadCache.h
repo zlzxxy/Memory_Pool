@@ -1,3 +1,4 @@
+namespace memorypool {
 class ThreadCache {
 public:
     static ThreadCache* getInstance() {
@@ -20,3 +21,5 @@ private:
     std::array<void*, FREE_LIST_SIZE> freeList_;
     std::array<size_t, FREE_LIST_SIZE> freeListSize_;
 };
+
+}

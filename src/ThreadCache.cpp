@@ -1,3 +1,7 @@
+#include "../include/ThreadCache.h"
+#include "../include/CentralCache.h"
+
+namespace memorypool {
 void* ThreadCache::allocate(size_t size) {
     if (size == 0) {
         size = ALIGNMENT;
@@ -92,4 +96,5 @@ void ThreadCache::returnToCentralCache(void* start, size_t size) {
             CentralCache::getInstance().returnRange(nextNode, returnNum* alignedSize, index);
         }
     }
+}
 }
