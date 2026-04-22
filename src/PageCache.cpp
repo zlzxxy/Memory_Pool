@@ -118,7 +118,6 @@ void* PageCache::systemAlloc(size_t numPages)
     void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) return nullptr;
 
-    memset(ptr, 0, size);
     return ptr;
 }
 }

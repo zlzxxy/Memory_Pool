@@ -1,23 +1,52 @@
 #include "ThreadCache.h"
 #include "CentralCache.h"
 
+#include <cstdlib>
+
 namespace memoryPool {
+
+namespace {
+
+inline size_t getBatchNumBySize(size_t size) {
+    constexpr size_t TARGET_BYTES = 64 * 1024;
+    constexpr size_t MIN_BATCH = 8;
+    constexpr size_t MAX_BATCH = 512;
+
+    size_t batch = TARGET_BYTES / (size ? size : ALIGNMENT);
+    if (batch < MIN_BATCH) batch = MIN_BATCH;
+    if (batch > MAX_BATCH) batch = MAX_BATCH;
+    return batch;
+}
+
+inline size_t getHighWaterMarkBySize(size_t size) {
+    const size_t batch = getBatchNumBySize(size);
+
+    if (size <= 64) {
+        return batch * 8;
+    }
+    if (size <= 256) {
+        return batch * 4;
+    }
+    return batch * 2;
+}
+
+}
+
 void* ThreadCache::allocate(size_t size) {
     if (size == 0) {
         size = ALIGNMENT;
     }
 
     if (size > MAX_BYTES) {
-        return malloc(size);
+        return std::malloc(size);
     }
 
-    size_t index = SizeClass::getIndex(size);
-
+    const size_t index = SizeClass::getIndex(size);
     void* ptr = freeList_[index];
-    if (ptr != nullptr) {
-        void* next = *reinterpret_cast<void**>(ptr);
-        freeList_[index] = next;
-        freeListSize_[index]--;
+
+    if (ptr) {
+        freeList_[index] = *reinterpret_cast<void**>(ptr);
+        --freeListSize_[index];
         return ptr;
     }
 
@@ -25,89 +54,83 @@ void* ThreadCache::allocate(size_t size) {
 }
 
 void* ThreadCache::fetchFromCentralCache(size_t index) {
-    void* start = CentralCache::getInstance().fetchRange(index);
-    if (!start) return nullptr;
-
-    //这里的start表示这一批块的第一个节点
-    void* result = start;
-    freeList_[index] = *reinterpret_cast<void**>(start);
-
-    size_t batchNum = 0;
-    void* current = start;
-
-    while (current != nullptr) {
-        batchNum++;
-        current = *reinterpret_cast<void**>(current);
+    size_t actualNum = 0;
+    void* start = CentralCache::getInstance().fetchRange(index, actualNum);
+    if (!start || actualNum == 0) {
+        return nullptr;
     }
 
-    freeListSize_[index] += batchNum - 1;
+    void* result = start;
 
+    if (actualNum == 1) {
+        freeList_[index] = nullptr;
+        return result;
+    }
+
+    freeList_[index] = *reinterpret_cast<void**>(start);
+    freeListSize_[index] += static_cast<uint32_t>(actualNum - 1);
     return result;
 }
 
 void ThreadCache::deallocate(void* ptr, size_t size) {
-    if (size > MAX_BYTES) {
-        free(ptr);
+    if (!ptr) {
         return;
     }
 
-    size_t index = SizeClass::getIndex(size);
+    if (size > MAX_BYTES) {
+        std::free(ptr);
+        return;
+    }
 
+    const size_t index = SizeClass::getIndex(size);
     *reinterpret_cast<void**>(ptr) = freeList_[index];
     freeList_[index] = ptr;
 
-    freeListSize_[index]++;
+    const uint32_t newSize = ++freeListSize_[index];
+    const size_t blockSize = SizeClass::indexToSize(index);
 
-    if (shouldReturnToCentralcache(index)) {
-        returnToCentralCache(freeList_[index], size);
+    if (newSize > getHighWaterMark(blockSize)) {
+        returnToCentralCache(index);
     }
 }
 
-void ThreadCache::returnToCentralCache(void* start, size_t size) {
-    size_t index = SizeClass::getIndex(size);
-
-    size_t alignedSize = SizeClass::roundUp(size);
-
-    size_t batchNum = freeListSize_[index];
-    if (batchNum <= 1) return;
-
-    size_t keepNum = std::max(batchNum / 4, size_t(1));
-    size_t returnNum = batchNum - keepNum;
-
-    char* current = static_cast<char*>(start);
-    char* splitNode = current;
-    for (size_t i = 0; i < keepNum - 1; i++) {
-        splitNode = reinterpret_cast<char*>(*reinterpret_cast<void**>(splitNode));
-        if (splitNode == nullptr) {
-            returnNum = batchNum - (i + 1);
-            break;
-        }
+void ThreadCache::returnToCentralCache(size_t index) {
+    const uint32_t batchNum = freeListSize_[index];
+    if (batchNum <= 1) {
+        return;
     }
-    if (splitNode != nullptr) {
-        void* nextNode = *reinterpret_cast<void**>(splitNode);
-        *reinterpret_cast<void**>(splitNode) = nullptr;
 
-        freeList_[index] = start;
+    const size_t blockSize = SizeClass::indexToSize(index);
+    const size_t keepNum = getBatchNum(blockSize);
 
-        freeListSize_[index] = keepNum;
-
-        if (returnNum > 0 && nextNode != nullptr) {
-            CentralCache::getInstance().returnRange(nextNode, returnNum* alignedSize, index);
-        }
+    if (batchNum <= keepNum) {
+        return;
     }
+
+    const size_t returnNum = batchNum - keepNum;
+
+    void* head = freeList_[index];
+    void* split = head;
+
+    for (size_t i = 1; i < keepNum; ++i) {
+        split = *reinterpret_cast<void**>(split);
+    }
+
+    void* returnHead = *reinterpret_cast<void**>(split);
+    *reinterpret_cast<void**>(split) = nullptr;
+
+    freeList_[index] = head;
+    freeListSize_[index] = static_cast<uint32_t>(keepNum);
+
+    CentralCache::getInstance().returnRange(returnHead, returnNum, index);
 }
+
 size_t ThreadCache::getBatchNum(size_t size) {
-    size_t alignedSize = SizeClass::roundUp(size);
-    size_t num = MAX_BYTES / alignedSize;
-
-    if (num < 2) num = 2;
-    if (num > 64) num = 64;
-
-    return num;
+    return getBatchNumBySize(SizeClass::roundUp(size));
 }
 
-bool ThreadCache::shouldReturnToCentralcache(size_t index) {
-    size_t size = (index + 1) * ALIGNMENT;
-    return freeListSize_[index] >= getBatchNum(size);
+size_t ThreadCache::getHighWaterMark(size_t size) {
+    return getHighWaterMarkBySize(SizeClass::roundUp(size));
 }
+
 }

@@ -1,7 +1,10 @@
 #pragma once
 #include "Common.h"
 #include <array>
+#include <cstdint>
+
 namespace memoryPool {
+
 class ThreadCache {
 public:
     static ThreadCache* getInstance() {
@@ -14,15 +17,16 @@ public:
 
 private:
     ThreadCache() = default;
+
     void* fetchFromCentralCache(size_t index);
-    void returnToCentralCache(void* start, size_t size);
-    size_t getBatchNum(size_t size);
-    bool shouldReturnToCentralcache(size_t index);
+    void returnToCentralCache(size_t index);
+
+    static size_t getBatchNum(size_t size);
+    static size_t getHighWaterMark(size_t size);
 
 private:
-    //定长数组，里面存放FREE_LIST_SIZE个对象
     std::array<void*, FREE_LIST_SIZE> freeList_{};
-    std::array<size_t, FREE_LIST_SIZE> freeListSize_{};
+    std::array<uint32_t, FREE_LIST_SIZE> freeListSize_{};
 };
 
 }
