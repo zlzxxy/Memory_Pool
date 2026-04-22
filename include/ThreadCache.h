@@ -1,6 +1,7 @@
 #pragma once
 #include "Common.h"
-namespace memorypool {
+#include <array>
+namespace memoryPool {
 class ThreadCache {
 public:
     static ThreadCache* getInstance() {
@@ -20,8 +21,8 @@ private:
 
 private:
     //定长数组，里面存放FREE_LIST_SIZE个对象
-    std::array<void*, FREE_LIST_SIZE> freeList_;
-    std::array<size_t, FREE_LIST_SIZE> freeListSize_;
+    std::array<void*, FREE_LIST_SIZE> freeList_{};
+    std::array<size_t, FREE_LIST_SIZE> freeListSize_{};
 };
 
 }

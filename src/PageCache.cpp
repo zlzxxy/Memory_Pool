@@ -2,7 +2,7 @@
 #include <sys/mman.h>
 #include <cstring>
 
-namespace memorypool {
+namespace memoryPool {
 //内存分配
 void* PageCache::allocateSpan(size_t numPages) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -28,6 +28,7 @@ void* PageCache::allocateSpan(size_t numPages) {
             auto& list = freeSpans_[newSpan->numPages];
             newSpan->next = list;
             list = newSpan;
+            spanMap_[newSpan->pageAddr] = newSpan;
 
             span->numPages = numPages;
         }

@@ -1,84 +1,123 @@
-#include "../include/CentralCache.h"
-#include "../include/PageCache.h"
+#include "CentralCache.h"
+#include "PageCache.h"
 #include <cassert>
 #include <thread>
 #include <chrono>
 
-namespace memorypool {
+namespace memoryPool {
+const std::chrono::milliseconds CentralCache::DELAY_INTERVAL{100};
+
+CentralCache::CentralCache() {
+    auto now = std::chrono::steady_clock::now();
+
+    for (auto& head : centralFreeList_) {
+        head.store(nullptr, std::memory_order_relaxed);
+    }
+
+    for (auto& lock : locks_) {
+        lock.clear();
+    }
+
+    for (auto& count : delayCounts_) {
+        count.store(0, std::memory_order_relaxed);
+    }
+
+    for (auto& t : lastReturnTimes_) {
+        t = now;
+    }
+}
+
 //ThreadCache从CentralCache中取一块内存
 void* CentralCache::fetchRange(size_t index) {
     if (index >= FREE_LIST_SIZE) {
         return nullptr;
     }
 
-    //加锁
+    // 对当前 size class 加锁，防止多个线程同时修改 centralFreeList_
     while (locks_[index].test_and_set(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
-    
-    void* result = nullptr;
+
     try {
-        result = centralFreeList_[index].load(std::memory_order_relaxed);    //取链表头结点
-        if (!result) {
-            size_t size = (index + 1) * ALIGNMENT;
-            result = fetchFromPageCache(size);    //去PageCache申请一整段span
-            if (!result) {
+        size_t size = (index + 1) * ALIGNMENT;
+        void* head = centralFreeList_[index].load(std::memory_order_relaxed);
+
+        // 如果当前 central freelist 为空，就从 PageCache 获取一段 span，
+        // 再把这段 span 切成固定大小的小块，串成链表
+        if (!head) {
+            void* spanStart = fetchFromPageCache(size);
+            if (!spanStart) {
                 locks_[index].clear(std::memory_order_release);
                 return nullptr;
             }
-            char* start = static_cast<char*>(result);
-            
-            //计算span大块能切成多少小块
-            size_t numPages = (size <= SPAN_PAGES * PageCache::PAGE_SIZE) ? SPAN_PAGES : (size + PageCache::PAGE_SIZE - 1) / PageCache::PAGE_SIZE;
+
+            char* start = static_cast<char*>(spanStart);
+
+            // 计算这次 span 占多少页，以及总共能切出多少个小块
+            size_t numPages = (size <= SPAN_PAGES * PageCache::PAGE_SIZE)
+                ? SPAN_PAGES
+                : (size + PageCache::PAGE_SIZE - 1) / PageCache::PAGE_SIZE;
             size_t blockNum = (numPages * PageCache::PAGE_SIZE) / size;
 
-            if (blockNum >= 1) {
-                //把一个span切成单链表
-                for (size_t i = 1; i < blockNum; i++) {
-                    void* current = start + (i - 1) * size;
-                    void* next = start + i * size;
-                    *reinterpret_cast<void**>(current) = next;
-                }
-                *reinterpret_cast<void**>(start + (blockNum - 1) * size) = nullptr;
+            // 把 span 内存按 size 切成链表：block1 -> block2 -> ... -> nullptr
+            for (size_t i = 0; i + 1 < blockNum; ++i) {
+                void* current = start + i * size;
+                void* next = start + (i + 1) * size;
+                *reinterpret_cast<void**>(current) = next;
+            }
+            *reinterpret_cast<void**>(start + (blockNum - 1) * size) = nullptr;
 
-                //使用第一块，其余块挂入中心缓存的自由链表
-                void* next = *reinterpret_cast<void**>(result);
-                *reinterpret_cast<void**>(result) = nullptr;
-                centralFreeList_[index].store(
-                    next,
-                    std::memory_order_release
-                );
+            // 挂到 central freelist 上
+            centralFreeList_[index].store(start, std::memory_order_release);
+            head = start;
 
-                //登记span的元信息
-                size_t trackerIndex = spanCount_++;
-                if (trackerIndex < SpanTrackers_.size()) {
-                    SpanTrackers_[trackerIndex].spanAddr.store(start, std::memory_order_release);
-                    SpanTrackers_[trackerIndex].numPages.store(numPages, std::memory_order_release);
-                    SpanTrackers_[trackerIndex].blockCount.store(blockNum, std::memory_order_release);
-                    SpanTrackers_[trackerIndex].freeCount.store(blockNum - 1, std::memory_order_release);
-                }
+            // 记录这个 span 的基本信息，后续回收时要用
+            size_t trackerIndex = spanCount_++;
+            if (trackerIndex < SpanTrackers_.size()) {
+                SpanTrackers_[trackerIndex].spanAddr.store(start, std::memory_order_release);
+                SpanTrackers_[trackerIndex].numPages.store(numPages, std::memory_order_release);
+                SpanTrackers_[trackerIndex].blockCount.store(blockNum, std::memory_order_release);
+                SpanTrackers_[trackerIndex].freeCount.store(blockNum, std::memory_order_release);
             }
         }
-        else {
-            void* next = *reinterpret_cast<void**>(result);
-            *reinterpret_cast<void**>(result) = nullptr;
-            centralFreeList_[index].store(next, std::memory_order_release);
 
-            //这个块从“空闲”变成“已分配”，它所属span的空闲块数量要减1
-            SpanTracker* tracker = getSpanTracker(result);
-            if (tracker) {
-                tracker->freeCount.fetch_sub(1, std::memory_order_release);
-            }
-            
+        // 一次不要只返回一个块，而是批量返回一段链表给 ThreadCache
+        // 这样可以减少线程频繁访问 CentralCache 的次数
+        size_t batchNum = std::max<size_t>(2, std::min<size_t>(64, MAX_BYTES / size));
+
+        void* batchHead = head;   // 记录这一批链表的头结点
+        void* prev = nullptr;     // 记录这一批的最后一个结点
+        size_t actualNum = 0;     // 实际取出的块数
+
+        // 从 central freelist 中切下前 actualNum 个块
+        while (head && actualNum < batchNum) {
+            prev = head;
+            head = *reinterpret_cast<void**>(head);
+            ++actualNum;
         }
+
+        // 断开这一批链表和剩余链表的连接
+        if (prev) {
+            *reinterpret_cast<void**>(prev) = nullptr;
+        }
+
+        // 剩余部分继续留在 central freelist 中
+        centralFreeList_[index].store(head, std::memory_order_release);
+
+        // 更新 span 的空闲块数：
+        // 从 CentralCache 拿走了 actualNum 个块，所以 freeCount 要减少
+        SpanTracker* tracker = getSpanTracker(batchHead);
+        if (tracker) {
+            tracker->freeCount.fetch_sub(actualNum, std::memory_order_release);
+        }
+
+        locks_[index].clear(std::memory_order_release);
+        return batchHead;
     }
     catch (...) {
         locks_[index].clear(std::memory_order_release);
         throw;
     }
-
-    locks_[index].clear(std::memory_order_release);
-    return result;
 }
 
 //把“一段链表”还给CentralCache

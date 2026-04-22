@@ -1,7 +1,7 @@
-#include "../include/ThreadCache.h"
-#include "../include/CentralCache.h"
+#include "ThreadCache.h"
+#include "CentralCache.h"
 
-namespace memorypool {
+namespace memoryPool {
 void* ThreadCache::allocate(size_t size) {
     if (size == 0) {
         size = ALIGNMENT;
@@ -13,12 +13,11 @@ void* ThreadCache::allocate(size_t size) {
 
     size_t index = SizeClass::getIndex(size);
 
-    freeListSize_[index]--;
-
     void* ptr = freeList_[index];
     if (ptr != nullptr) {
         void* next = *reinterpret_cast<void**>(ptr);
         freeList_[index] = next;
+        freeListSize_[index]--;
         return ptr;
     }
 
@@ -96,5 +95,19 @@ void ThreadCache::returnToCentralCache(void* start, size_t size) {
             CentralCache::getInstance().returnRange(nextNode, returnNum* alignedSize, index);
         }
     }
+}
+size_t ThreadCache::getBatchNum(size_t size) {
+    size_t alignedSize = SizeClass::roundUp(size);
+    size_t num = MAX_BYTES / alignedSize;
+
+    if (num < 2) num = 2;
+    if (num > 64) num = 64;
+
+    return num;
+}
+
+bool ThreadCache::shouldReturnToCentralcache(size_t index) {
+    size_t size = (index + 1) * ALIGNMENT;
+    return freeListSize_[index] >= getBatchNum(size);
 }
 }

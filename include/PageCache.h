@@ -3,7 +3,7 @@
 #include <map>
 #include <mutex>
 
-namespace memorypool {
+namespace memoryPool {
 class PageCache {
 public:
     static const size_t PAGE_SIZE = 4096;

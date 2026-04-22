@@ -6,7 +6,7 @@
 #include <atomic>
 #include <chrono>
 
-namespace memorypool {
+namespace memoryPool {
 
 //定义从PageCache中拿来的大块span的结构体
 struct SpanTracker {
@@ -35,10 +35,10 @@ private:
     void updateSpanFreeCount(SpanTracker* tracker, size_t newFreeBlocks, size_t index);
 
     //中心缓存的自由链表，每一个下标index对应一种固定字节的小块
-    std::array<std::atomic<void*>, FREE_LIST_SIZE> centralFreeList_;
+    std::array<std::atomic<void*>, FREE_LIST_SIZE> centralFreeList_{};
 
     //锁，保护对应的中央自由链表
-    std::array<std::atomic_flag, FREE_LIST_SIZE> locks_;
+    std::array<std::atomic_flag, FREE_LIST_SIZE> locks_{};
 
     std::array<SpanTracker, 1024> SpanTrackers_;
     //每次从PageCache拿到一个新的span，spanCount_++
@@ -46,8 +46,8 @@ private:
 
     //延迟归还span
     static const size_t MAX_DELAY_COUNT = 48;
-    std::array<std::atomic<size_t>, FREE_LIST_SIZE> delayCounts_;
-    std::array<std::chrono::steady_clock::time_point, FREE_LIST_SIZE> lastReturnTimes_;
+    std::array<std::atomic<size_t>, FREE_LIST_SIZE> delayCounts_{};
+    std::array<std::chrono::steady_clock::time_point, FREE_LIST_SIZE> lastReturnTimes_{};
     static const std::chrono::milliseconds DELAY_INTERVAL;
 
     bool shouldPerformDelayedReturn(size_t index, size_t currentCount, std::chrono::steady_clock::time_point currentTime);
