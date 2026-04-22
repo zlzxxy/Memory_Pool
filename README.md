@@ -1,4 +1,4 @@
-h# Memory Pool
+# Memory Pool
 
 一个基于 **ThreadCache / CentralCache / PageCache** 三层结构实现的 C++ 内存池项目，主要用于优化小对象频繁申请与释放时的性能开销，并降低多线程场景下的锁竞争。
 
