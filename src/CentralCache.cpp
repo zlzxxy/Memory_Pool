@@ -70,6 +70,7 @@ void* CentralCache::fetchRange(size_t index, size_t& actualNum) {
     return batchHead;
 }
 
+// 头插法插入一整段链表
 void CentralCache::returnRange(void* start, size_t blockCount, size_t index) {
     if (!start || index >= FREE_LIST_SIZE || blockCount == 0) {
         return;

@@ -36,6 +36,7 @@ bool PageCache::removeFromFreeList(Span* span) {
     return true;
 }
 
+// 申请连续的numPages页
 void* PageCache::allocateSpan(size_t numPages) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -86,7 +87,7 @@ void* PageCache::allocateSpan(size_t numPages) {
     }
 }
 
-void PageCache::deallocateSpan(void* ptr, size_t /*numPages*/) {
+void PageCache::deallocateSpan(void* ptr) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto it = spanMap_.find(ptr);
@@ -111,6 +112,7 @@ void PageCache::deallocateSpan(void* ptr, size_t /*numPages*/) {
     list = span;
 }
 
+// 向操作系统申请一段匿名内存，大小是numPages * 4096字节
 void* PageCache::systemAlloc(size_t numPages)
 {
     size_t size = numPages * PAGE_SIZE;

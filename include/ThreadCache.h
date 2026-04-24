@@ -8,7 +8,7 @@ namespace memoryPool {
 class ThreadCache {
 public:
     static ThreadCache* getInstance() {
-        static thread_local ThreadCache instance;
+        static thread_local ThreadCache instance;    // 每个线程都有自己独立的ThreadCache
         return &instance;
     }
 
@@ -25,8 +25,8 @@ private:
     static size_t getHighWaterMark(size_t size);
 
 private:
-    std::array<void*, FREE_LIST_SIZE> freeList_{};
-    std::array<uint32_t, FREE_LIST_SIZE> freeListSize_{};
+    std::array<void*, FREE_LIST_SIZE> freeList_{};    // 自由链表数组
+    std::array<uint32_t, FREE_LIST_SIZE> freeListSize_{};    // 记录每个自由链表里目前有多少个空闲块 
 };
 
 }

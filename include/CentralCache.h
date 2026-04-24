@@ -1,3 +1,4 @@
+//所有线程共享的缓存
 #pragma once
 #include "Common.h"
 #include <array>
@@ -23,8 +24,8 @@ private:
     void* fetchFromPageCache(size_t size);
 
 private:
-    std::array<void*, FREE_LIST_SIZE> centralFreeList_{};
-    std::array<std::mutex, FREE_LIST_SIZE> locks_{};
+    std::array<void*, FREE_LIST_SIZE> centralFreeList_{};   // 每种规格一个自由链表
+    std::array<std::mutex, FREE_LIST_SIZE> locks_{};    // 每种规格一个锁
 };
 
 }

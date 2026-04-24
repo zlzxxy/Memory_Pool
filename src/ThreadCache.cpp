@@ -42,11 +42,13 @@ void* ThreadCache::allocate(size_t size) {
     }
 
     const size_t index = SizeClass::getIndex(size);
-    void* ptr = freeList_[index];
+    void* ptr = freeList_[index];    // 获得链表的头节点
 
+    // 头删法
     if (ptr) {
+        // *reinterpret_cast<void**>(ptr): 把ptr这块内存的前8个字节解释成void* next
         freeList_[index] = *reinterpret_cast<void**>(ptr);
-        --freeListSize_[index];
+        freeListSize_[index]--;
         return ptr;
     }
 
@@ -83,12 +85,14 @@ void ThreadCache::deallocate(void* ptr, size_t size) {
     }
 
     const size_t index = SizeClass::getIndex(size);
+    // 头插法
     *reinterpret_cast<void**>(ptr) = freeList_[index];
     freeList_[index] = ptr;
 
-    const uint32_t newSize = ++freeListSize_[index];
+    const uint32_t newSize = freeListSize_[index]++;
     const size_t blockSize = SizeClass::indexToSize(index);
 
+    // 如果线程缓存里的空闲块太多，就不能一直留在线程里，getHighWaterMark是高水位线
     if (newSize > getHighWaterMark(blockSize)) {
         returnToCentralCache(index);
     }
