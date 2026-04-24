@@ -8,7 +8,7 @@
 
 ## 项目简介
 
-系统默认的 `new/delete` 或 `malloc/free` 在大量小块内存分配、释放，以及多线程高频访问场景下，往往会带来较高的系统调用开销和锁竞争。
+系统默认的 `new/delete` 或 `malloc/free` 在大量小块内存分配、释放，以及多线程高频访问场景下，可能会带来较高的分配器管理开销和锁竞争。
 
 本项目通过三级缓存分配器的方式，对不同粒度的内存管理进行分层处理：
 
@@ -97,8 +97,8 @@ flowchart TD
     B -->|中心缓存为空| C[PageCache<br/>页级缓存]
     C -->|向操作系统申请页内存| D[mmap]
 
-    A <-->|批量归还空闲块| B
-    B <-->|申请/归还 Span| C
+    A -->|批量归还空闲块| B
+    B -->|申请 Span| C
 ```
 
 ### 一次分配的大致流程
@@ -109,14 +109,16 @@ flowchart TD
 4. 若线程缓存为空，则向 `CentralCache` 批量申请
 5. 若 `CentralCache` 也为空，则继续向 `PageCache` 申请 Span
 6. `PageCache` 必要时通过 `mmap` 向系统申请新页
-7. 切分 Span，返回一块给当前线程，其余挂回自由链表
+7. `CentralCache` 将 Span 切分为多个同规格的小块，并批量返回给 `ThreadCache`
+8. `ThreadCache` 将其中一块返回给用户，其余小块缓存在线程本地
 
 ### 一次释放的大致流程
 
 1. 线程调用 `ThreadCache::deallocate(ptr, size)`
 2. 小块内存先回收到当前线程的自由链表
 3. 当线程缓存数量超过阈值后，批量归还给 `CentralCache`
-4. 更大粒度的空闲内存由 `PageCache` 统一管理
+4. `CentralCache` 将归还的小块挂回对应 size class 的共享自由链表，供后续线程复用
+5. 当前版本暂未实现 `CentralCache` 将完全空闲的 Span 主动归还给 `PageCache`
 
 ---
 
@@ -150,6 +152,7 @@ flowchart TD
 - 按 size class 维护共享自由链表
 - 不同规格对应不同锁，降低锁粒度
 - 当某个规格的链表为空时，从 `PageCache` 申请 Span 并切分为多个小块
+- 接收 `ThreadCache` 批量归还的小块，并挂回对应 size class 的自由链表
 
 这层的核心作用是：**在线程本地缓存和页级缓存之间做批量中转**。
 
@@ -162,7 +165,7 @@ flowchart TD
 - 使用 `std::map<void*, Span*> spanMap_` 记录地址到 Span 的映射
 - 当缓存不足时，通过 `mmap` 申请系统内存
 
-当前实现已经具备基本的 Span 复用能力，并支持与后继相邻空闲 Span 的合并。
+当前实现具备基本的 Span 复用能力，并支持与后继相邻空闲 Span 的合并。
 
 ### 5. 大对象处理
 
@@ -172,6 +175,26 @@ flowchart TD
 - `std::free(ptr)`
 
 这样可以避免超大块内存把小对象内存池结构拖得过重。
+
+---
+
+## 当前实现说明
+
+当前版本重点实现了三层缓存分配链路：
+
+```text
+ThreadCache -> CentralCache -> PageCache -> mmap
+```
+
+释放时，小块内存主要在 `ThreadCache` 和 `CentralCache` 之间流转并复用：
+
+```text
+ThreadCache -> CentralCache
+```
+
+也就是说，当前版本没有维护完整的 block-to-Span 映射，也没有统计某个 Span 中所有 block 是否都已经空闲。因此，`CentralCache` 暂时不会主动把完全空闲的 Span 归还给 `PageCache`。
+
+这个设计可以减少元数据维护成本，使实现更简洁，适合作为学习型和项目型内存池版本。后续如果需要增强内存回收能力，可以在 `CentralCache` 中增加 Span 元数据追踪，再实现完整 Span 回收。
 
 ---
 
@@ -309,14 +332,14 @@ int main() {
 
 如果继续完善，这个项目还可以往下扩展：
 
-- 增加更完整的 Span 合并策略
+- 增加 `CentralCache` 对 Span 的空闲块统计，实现完整 Span 回收到 `PageCache`
+- 增加更完整的 Span 前后双向合并策略
 - 引入无锁或更细粒度同步方案
 - 为对象构造/析构封装 `newElement/deleteElement` 风格接口
 - 补充更多 benchmark 场景
 - 增加统计信息，如命中率、系统申请次数、线程缓存回收次数等
 - 提供更友好的对外接口与示例
 
-欢迎大家一起讨论
 ---
 
 ## 运行环境
