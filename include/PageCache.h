@@ -16,7 +16,7 @@ public:
 
     void* allocateSpan(size_t numPages);
 
-    void deallocateSpan(void* ptr, size_t numPages);
+    void deallocateSpan(void* ptr);
 
 private:
     // 一个Span表示一段连续的页

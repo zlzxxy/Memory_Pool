@@ -1,60 +1,21 @@
 # Memory Pool
 
-一个基于 **ThreadCache / CentralCache / PageCache** 三层结构实现的 C++ 内存池项目，主要用于优化小对象频繁申请与释放时的性能开销，并降低多线程场景下的锁竞争。
+一个基于 **ThreadCache / CentralCache / PageCache** 三层结构实现的 C++ 内存池项目，主要用于优化小对象频繁分配与多线程场景下的内存分配性能。
 
-该项目使用 **C++17** 编写，使用 **CMake** 构建，底层页级内存通过 **mmap** 向操作系统申请，因此更适合在 Linux 环境下运行与测试。
-
----
-
-## 项目简介
-
-系统默认的 `new/delete` 或 `malloc/free` 在大量小块内存分配、释放，以及多线程高频访问场景下，往往会带来较高的系统调用开销和锁竞争。
-
-本项目通过三级缓存分配器的方式，对不同粒度的内存管理进行分层处理：
-
-- **ThreadCache**：线程私有缓存，优先在本线程内完成分配与回收，减少加锁开销。
-- **CentralCache**：线程共享的中心缓存，负责为各线程批量提供同一规格的小块内存。
-- **PageCache**：页级缓存，负责管理更大粒度的 Span，并通过 `mmap` 向操作系统申请页内存。
-
-整体目标：
-
-- 提高小对象分配效率
-- 降低多线程竞争
-- 减少频繁向操作系统申请内存的次数
-- 形成较清晰的分层内存管理结构，便于学习与扩展
+项目参考了 tcmalloc 的分层缓存思想：线程优先从自己的本地缓存中申请内存，本地缓存不足时再向中心缓存批量获取，中心缓存不足时再向页缓存申请大块连续内存。
 
 ---
 
-## 项目特性
+## 项目特点
 
-- 基于三层缓存结构的内存池设计
-- 按 **8 字节对齐** 管理小块内存
-- 小于等于 **256 KB** 的申请走内存池路径
-- 大于 **256 KB** 的申请直接回退到 `malloc/free`
-- `ThreadCache` 使用 `thread_local`，降低线程间竞争
-- `CentralCache` 按 size class 维护共享自由链表
-- `PageCache` 以页（4 KB）为单位管理 Span
-- 提供正确性测试与性能测试
-- 使用 CMake 构建，便于在 Linux 环境下编译运行
-
----
-
-## 核心参数
-
-项目中的部分关键常量定义如下：
-
-- `ALIGNMENT = 8`
-- `PAGE_SIZE = 4096`
-- `SPAN_PAGES = 8`
-- `MAX_BYTES = 256 * 1024`
-- `FREE_LIST_SIZE = MAX_BYTES / ALIGNMENT`
-
-这意味着：
-
-- 小对象会按照 8 字节向上对齐
-- 页缓存默认以 4 KB 页为基本单位
-- 常规小块分配优先从 8 页的 Span 中切分
-- 最大受内存池管理的小块大小为 256 KB
+- 使用 C++17 实现，代码结构清晰，便于学习和扩展
+- 采用三层缓存结构：`ThreadCache`、`CentralCache`、`PageCache`
+- `ThreadCache` 使用 `thread_local`，减少多线程场景下的锁竞争
+- 小对象按照 8 字节对齐，并映射到不同的 size class
+- 空闲内存块复用自身空间作为链表节点，减少额外元数据开销
+- `CentralCache` 按 size class 分桶加锁，降低不同规格内存之间的竞争
+- `PageCache` 以页为单位管理大块内存，并使用 `mmap` 向操作系统申请内存
+- 提供正确性测试和性能测试，覆盖基础分配、边界大小、内存复用和多线程场景
 
 ---
 
@@ -62,30 +23,24 @@
 
 ```text
 memory_pool/
-├── CMakeLists.txt
 ├── include/
-│   ├── Common.h
-│   ├── ThreadCache.h
-│   ├── CentralCache.h
-│   └── PageCache.h
+│   ├── Common.h          # 公共常量、size class 映射工具
+│   ├── ThreadCache.h     # 线程本地缓存接口
+│   ├── CentralCache.h    # 中心缓存接口
+│   └── PageCache.h       # 页缓存接口
+│
 ├── src/
-│   ├── ThreadCache.cpp
-│   ├── CentralCache.cpp
-│   └── PageCache.cpp
+│   ├── ThreadCache.cpp   # ThreadCache 实现
+│   ├── CentralCache.cpp  # CentralCache 实现
+│   └── PageCache.cpp     # PageCache 实现
+│
 ├── test/
-│   └── test_memory_pool.cpp
-└── README.md
+│   └── test_memory_pool.cpp  # 正确性测试与性能测试
+│
+├── CMakeLists.txt
+├── README.md
+└── .gitignore
 ```
-
-各模块职责如下：
-
-| 文件 | 作用 |
-|---|---|
-| `Common.h` | 公共常量与 `SizeClass` 映射规则 |
-| `ThreadCache.*` | 线程本地缓存，负责分配与回收小块对象 |
-| `CentralCache.*` | 中心缓存，负责批量分发与回收同规格内存块 |
-| `PageCache.*` | 页级缓存，负责 Span 管理与系统内存申请 |
-| `test_memory_pool.cpp` | 正确性测试与性能测试 |
 
 ---
 
@@ -93,175 +48,281 @@ memory_pool/
 
 ```mermaid
 flowchart TD
-    A[ThreadCache<br/>线程私有] -->|本地无可用块| B[CentralCache<br/>中心缓存]
-    B -->|中心缓存为空| C[PageCache<br/>页级缓存]
-    C -->|向操作系统申请页内存| D[mmap]
+    A[用户申请/释放内存] --> B[ThreadCache]
+    B -->|本地缓存不足，批量申请| C[CentralCache]
+    C -->|中心缓存不足，申请 Span| D[PageCache]
+    D -->|缓存不足| E[操作系统 mmap]
 
-    A <-->|批量归还空闲块| B
-    B <-->|申请/归还 Span| C
+    B -->|缓存过多，批量归还 block| C
 ```
 
-### 一次分配的大致流程
+### 三层缓存职责
 
-1. 线程调用 `ThreadCache::allocate(size)`
-2. 将 `size` 按 8 字节对齐，并映射到对应的 size class
-3. 若当前线程的自由链表非空，直接返回一块内存
-4. 若线程缓存为空，则向 `CentralCache` 批量申请
-5. 若 `CentralCache` 也为空，则继续向 `PageCache` 申请 Span
-6. `PageCache` 必要时通过 `mmap` 向系统申请新页
-7. 切分 Span，返回一块给当前线程，其余挂回自由链表
-
-### 一次释放的大致流程
-
-1. 线程调用 `ThreadCache::deallocate(ptr, size)`
-2. 小块内存先回收到当前线程的自由链表
-3. 当线程缓存数量超过阈值后，批量归还给 `CentralCache`
-4. 更大粒度的空闲内存由 `PageCache` 统一管理
+| 模块 | 职责 |
+|---|---|
+| `ThreadCache` | 每个线程独立持有的本地缓存，负责快速分配和释放小块内存 |
+| `CentralCache` | 所有线程共享的中心缓存，负责在线程之间批量调度内存块 |
+| `PageCache` | 页级缓存，负责管理连续页组成的 Span，并在不足时向系统申请内存 |
 
 ---
 
-## 关键实现说明
+## 核心设计
 
-### 1. SizeClass 映射
+### 1. Size Class 管理
 
-项目通过 `SizeClass` 将用户请求大小映射到固定规格：
+项目将小对象按照 8 字节对齐，并映射到对应的自由链表。
 
-- `roundUp(bytes)`：按 8 字节向上对齐
-- `getIndex(bytes)`：将大小映射到自由链表下标
-- `indexToSize(index)`：由链表下标反推块大小
+例如：
 
-这样可以避免维护过于零散的内存块规格，简化分配与回收逻辑。
+| 用户申请大小 | 实际对齐大小 | size class 下标 |
+|---:|---:|---:|
+| 1 | 8 | 0 |
+| 8 | 8 | 0 |
+| 9 | 16 | 1 |
+| 16 | 16 | 1 |
+| 17 | 24 | 2 |
+
+相关代码位于 `include/Common.h`：
+
+```cpp
+static inline size_t roundUp(size_t bytes)
+{
+    return (bytes + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+}
+
+static inline size_t getIndex(size_t bytes)
+{
+    return (bytes <= ALIGNMENT) ? 0 : ((bytes - 1) >> 3);
+}
+```
+
+---
 
 ### 2. ThreadCache
 
-`ThreadCache` 是线程本地缓存：
+`ThreadCache` 是线程本地缓存，每个线程拥有独立实例：
 
-- 每个线程拥有独立的自由链表数组
-- 分配时优先从本线程缓存中取块
-- 释放时优先归还给本线程缓存
-- 当缓存过多时，批量归还给 `CentralCache`
+```cpp
+static thread_local ThreadCache instance;
+```
 
-这样做的好处是：**绝大多数小块分配不需要加锁**。
+每个 `ThreadCache` 内部维护多个自由链表：
 
-### 3. CentralCache
+```cpp
+std::array<void*, FREE_LIST_SIZE> freeList_{};
+std::array<uint32_t, FREE_LIST_SIZE> freeListSize_{};
+```
 
-`CentralCache` 是线程共享层：
+当线程申请内存时：
 
-- 按 size class 维护共享自由链表
-- 不同规格对应不同锁，降低锁粒度
-- 当某个规格的链表为空时，从 `PageCache` 申请 Span 并切分为多个小块
+1. 如果本地自由链表有空闲块，直接返回；
+2. 如果本地自由链表为空，向 `CentralCache` 批量申请；
+3. 返回其中一个 block 给用户，其余 block 留在当前线程缓存中。
 
-这层的核心作用是：**在线程本地缓存和页级缓存之间做批量中转**。
+释放内存时：
 
-### 4. PageCache
-
-`PageCache` 负责页级 Span 管理：
-
-- 以页为单位维护空闲 Span
-- 使用 `std::map<size_t, Span*> freeSpans_` 管理不同页数的空闲 Span
-- 使用 `std::map<void*, Span*> spanMap_` 记录地址到 Span 的映射
-- 当缓存不足时，通过 `mmap` 申请系统内存
-
-当前实现已经具备基本的 Span 复用能力，并支持与后继相邻空闲 Span 的合并。
-
-### 5. 大对象处理
-
-当申请大小 **超过 256 KB** 时，不再走内存池，而是直接使用：
-
-- `std::malloc(size)`
-- `std::free(ptr)`
-
-这样可以避免超大块内存把小对象内存池结构拖得过重。
+1. 先将 block 放回当前线程的自由链表；
+2. 如果当前线程缓存数量超过高水位线，则批量归还一部分给 `CentralCache`。
 
 ---
 
-## 编译与运行
+### 3. CentralCache
 
-### 1. 克隆项目
+`CentralCache` 是所有线程共享的中心缓存。
 
-```bash
-git clone <your-repo-url>
-cd memory_pool
+它按照 size class 维护自由链表，并为每个 size class 配置独立锁：
+
+```cpp
+std::array<void*, FREE_LIST_SIZE> centralFreeList_{};
+std::array<std::mutex, FREE_LIST_SIZE> locks_{};
 ```
 
-### 2. 使用 CMake 构建
+这种设计可以避免所有大小的内存分配都争用同一把锁。
 
-```bash
-cmake -S . -B build
-cmake --build build
+当 `ThreadCache` 向 `CentralCache` 申请内存时，`CentralCache` 会批量返回多个 block。若对应规格的中心自由链表为空，则会向 `PageCache` 申请一个 Span，并将 Span 切分成多个相同大小的 block。
+
+---
+
+### 4. PageCache
+
+`PageCache` 是最底层的页缓存，管理单位是 Span。
+
+```cpp
+struct Span {
+    void* pageAddr;
+    size_t numPages;
+    Span* next;
+    bool isFree;
+};
 ```
 
-### 3. 运行测试程序
+一个 Span 表示一段连续页，例如：
 
-```bash
-./build/test_memory_pool
+```text
+8 pages = 8 * 4096 = 32768 bytes
 ```
 
-### 4. 运行 CTest
+当 `CentralCache` 没有足够内存时，会向 `PageCache` 申请若干页。`PageCache` 优先从已有空闲 Span 中查找合适空间；如果没有合适 Span，则通过 `mmap` 向操作系统申请新内存。
+
+---
+
+## 分配流程
+
+```text
+allocate(size)
+    |
+    v
+size > MAX_BYTES ?
+    | yes
+    v
+直接使用 malloc
+    |
+    no
+    v
+ThreadCache 是否有对应规格的空闲 block？
+    | yes
+    v
+直接返回
+    |
+    no
+    v
+向 CentralCache 批量申请 block
+    |
+    v
+CentralCache 是否有空闲 block？
+    | yes
+    v
+批量返回给 ThreadCache
+    |
+    no
+    v
+向 PageCache 申请 Span
+    |
+    v
+PageCache 不足时通过 mmap 向系统申请内存
+    |
+    v
+切分 Span 为多个 block
+    |
+    v
+返回给 ThreadCache
+```
+
+---
+
+## 释放流程
+
+```text
+deallocate(ptr, size)
+    |
+    v
+ptr == nullptr ?
+    | yes
+    v
+直接返回
+    |
+    no
+    v
+size > MAX_BYTES ?
+    | yes
+    v
+直接使用 free
+    |
+    no
+    v
+放回当前线程 ThreadCache 的自由链表
+    |
+    v
+ThreadCache 缓存是否超过高水位线？
+    | no
+    v
+结束
+    |
+    yes
+    v
+批量归还部分 block 给 CentralCache
+```
+
+当前版本中，小块内存释放后主要会回到 `ThreadCache` 或 `CentralCache` 中复用；暂未实现 `CentralCache` 将完全空闲的 Span 主动归还给 `PageCache` 的完整机制。
+
+---
+
+## 构建方式
+
+### 环境要求
+
+- Linux
+- CMake >= 3.16
+- 支持 C++17 的编译器，例如 GCC 或 Clang
+- pthread
+
+### 编译
 
 ```bash
+mkdir -p build
 cd build
+cmake ..
+make
+```
+
+### 运行测试
+
+```bash
+./test_memory_pool
+```
+
+或者使用 CTest：
+
+```bash
 ctest --output-on-failure
+```
+
+### Debug 模式开启 AddressSanitizer
+
+```bash
+mkdir -p build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Debug -DMEMORY_POOL_ENABLE_ASAN=ON
+make
+./test_memory_pool
 ```
 
 ---
 
 ## 测试内容
 
-项目测试分为两部分：
+测试代码位于：
+
+```text
+test/test_memory_pool.cpp
+```
+
+主要包括两部分：
 
 ### 正确性测试
 
-位于 `test/test_memory_pool.cpp`，主要覆盖：
-
-- **Basic sizes**：基础尺寸分配与释放
-- **Boundary sizes**：边界尺寸测试，如 7/8/9、255/256/257、`MAX_BYTES` 附近等
-- **Reuse behavior**：验证回收后的内存块能否再次复用
-- **Multi-thread smoke**：多线程并发下的基本正确性验证
-
-测试中会向内存块写入特定模式数据，并在释放前校验内容是否被破坏。
+| 测试项 | 说明 |
+|---|---|
+| Basic sizes | 测试常见大小的申请、写入、校验和释放 |
+| Boundary sizes | 测试 8、16、32、256KB 等边界附近的大小 |
+| Reuse behavior | 测试释放后的内存是否可以被再次复用 |
+| Multi-thread smoke | 测试多线程并发申请和释放时是否正常 |
 
 ### 性能测试
 
-性能测试将内存池与系统 `new/delete` 进行对比，包含：
+| 测试项 | 说明 |
+|---|---|
+| Small fixed sizes | 测试小对象频繁分配释放 |
+| Mixed sizes | 测试多种大小混合分配释放 |
+| Multi-thread | 测试多线程场景下的分配释放性能 |
 
-- **Small fixed sizes**：固定小块分配场景
-- **Mixed sizes**：多种尺寸混合分配场景
-- **Multi-thread**：多线程并发分配场景
-
----
-
-## 一次实际运行结果
-
-下面是当前版本在本地一次运行得到的测试输出：
-
-```text
-Starting memory pool tests...
-
-================ Correctness Tests ================
-[PASS] Basic sizes
-[PASS] Boundary sizes
-[PASS] Reuse behavior
-[PASS] Multi-thread smoke
-[ALL PASS] correctness tests passed.
-
-================ Performance Tests ================
-Benchmark               MemoryPool(ms)    new/delete(ms)       Speedup
-----------------------------------------------------------------------
-Small fixed sizes                2.222             1.926          0.87
-Mixed sizes                      7.800             8.034          1.03
-Multi-thread                     5.675            16.697          2.94
-
-All tests finished successfully.
-```
-
-说明：不同机器、编译参数、负载模型下结果会有波动，多线程场景通常更能体现线程本地缓存的优势。
+性能测试会将当前内存池与系统 `new/delete` 进行对比。实际结果会受到机器配置、编译选项、系统分配器实现和测试规模影响，因此测试结果仅作为参考。
 
 ---
 
-## 使用方式示例
+## 使用示例
 
-当前项目对外的主要使用方式是直接调用 `ThreadCache`：
+当前版本主要通过 `ThreadCache` 对外分配和释放内存。
 
 ```cpp
 #include "ThreadCache.h"
@@ -269,60 +330,37 @@ All tests finished successfully.
 using namespace memoryPool;
 
 int main() {
-    void* p = ThreadCache::getInstance()->allocate(64);
+    void* ptr = ThreadCache::getInstance()->allocate(64);
 
     // 使用内存...
 
-    ThreadCache::getInstance()->deallocate(p, 64);
+    ThreadCache::getInstance()->deallocate(ptr, 64);
     return 0;
 }
 ```
 
-需要注意：
-
-- 释放时需要传入正确的 `size`
-- 大于 `MAX_BYTES` 的内存会自动走系统分配路径
-- 当前实现更偏向学习型、项目型内存池，而不是完整工业级分配器
+注意：释放时需要传入与申请时一致的大小。
 
 ---
 
-## 该项目的亮点
+## 项目定位
 
-这个项目比较适合作为 **C++ 后端 / 基础组件 / 性能优化方向** 的项目展示，可以突出以下关键词：
+本项目适合作为 C++ 方向的学习型项目，用于理解：
 
-- C++17
-- 内存池
-- 高并发
+- 内存池基本原理
+- 小对象分配优化
+- 自由链表管理
 - 线程本地缓存
-- 分层分配器
-- mmap
-- 性能测试
-- 多线程优化
+- 多线程锁竞争优化
+- 页级内存管理
+- `mmap` 系统调用的基本使用
 
-概括就是：
+可以将其描述为：
 
-> 基于 C++17 实现三层结构内存池，采用 ThreadCache / CentralCache / PageCache 分层设计，对小对象分配进行缓存优化；支持多线程场景下的高频内存申请与释放，并通过正确性测试与性能测试验证实现效果。
+> 一个参考 tcmalloc 思想实现的简化版三层缓存内存池，重点优化小对象频繁分配和多线程场景下的锁竞争问题。
 
 ---
 
-## 后续优化方向
+## License
 
-如果继续完善，这个项目还可以往下扩展：
-
-- 增加更完整的 Span 合并策略
-- 引入无锁或更细粒度同步方案
-- 为对象构造/析构封装 `newElement/deleteElement` 风格接口
-- 补充更多 benchmark 场景
-- 增加统计信息，如命中率、系统申请次数、线程缓存回收次数等
-- 提供更友好的对外接口与示例
-
-欢迎大家一起讨论
----
-
-## 运行环境
-
-- Linux
-- GCC / Clang
-- C++17
-- CMake 3.16 及以上
-- POSIX `mmap`
+本项目仅用于学习和交流。
